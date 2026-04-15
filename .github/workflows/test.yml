@@ -1,0 +1,166 @@
+name: Build Samba for iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: 'Target architecture'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+          - armv7
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          brew install automake autoconf libtool pkg-config python3
+          # Samba 需要 GNU sed (gsed) 和 gnutar
+          brew install gnu-sed gnu-tar
+
+      - name: Download Samba source
+        run: |
+          # 使用较老的稳定版本 4.9.8，对旧工具链兼容性更好
+          SAMBA_VERSION="4.9.8"
+          curl -LO https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}.tar.gz
+          tar xzf samba-${SAMBA_VERSION}.tar.gz
+          mv samba-${SAMBA_VERSION} samba-source
+
+      - name: Setup cross-compilation environment for iOS
+        id: setup_ios
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          DEPLOYMENT_TARGET="10.0"
+
+          if [ "${{ github.event.inputs.architecture }}" = "arm64" ]; then
+            ARCH="arm64"
+            HOST="aarch64-apple-darwin"
+          else
+            ARCH="armv7"
+            HOST="arm-apple-darwin"
+          fi
+
+          echo "SDK_PATH=${SDK_PATH}" >> $GITHUB_ENV
+          echo "DEPLOYMENT_TARGET=${DEPLOYMENT_TARGET}" >> $GITHUB_ENV
+          echo "ARCH=${ARCH}" >> $GITHUB_ENV
+          echo "HOST=${HOST}" >> $GITHUB_ENV
+
+          # 设置编译器标志
+          export CC="clang -arch ${ARCH} -isysroot ${SDK_PATH} -miphoneos-version-min=${DEPLOYMENT_TARGET}"
+          export CXX="clang++ -arch ${ARCH} -isysroot ${SDK_PATH} -miphoneos-version-min=${DEPLOYMENT_TARGET}"
+          echo "CC=${CC}" >> $GITHUB_ENV
+          echo "CXX=${CXX}" >> $GITHUB_ENV
+
+      - name: Configure Samba
+        working-directory: samba-source
+        run: |
+          # 修复 configure 脚本中的一些路径检测问题
+          export CC="${CC}"
+          export CXX="${CXX}"
+          export CPPFLAGS="-DHAVE_IOS=1 -D__IOS__=1"
+          export LDFLAGS="-L${SDK_PATH}/usr/lib"
+
+          # 最小化配置，禁用几乎所有非必要模块
+          ./configure \
+            --host=${HOST} \
+            --without-ads \
+            --without-ldap \
+            --without-afs \
+            --without-fake-kaserver \
+            --without-aio-support \
+            --without-syslog \
+            --without-quotas \
+            --without-utmp \
+            --without-winbind \
+            --without-pam \
+            --without-acl-support \
+            --without-sendfile-support \
+            --without-cluster-support \
+            --without-dmapi \
+            --without-fam \
+            --without-gpfs \
+            --without-gettext \
+            --without-iprint \
+            --without-cups \
+            --without-pie \
+            --without-ntvfs-fileserver \
+            --without-dfs-server \
+            --without-ctdb-server \
+            --without-profiling-data \
+            --disable-avahi \
+            --disable-cups \
+            --disable-iprint \
+            --disable-python \
+            --disable-rpath \
+            --disable-rpath-install \
+            --disable-symbol-versions \
+            --disable-warnings-as-errors \
+            --without-json \
+            --without-libarchive \
+            --without-libunwind \
+            --without-regedit \
+            --without-swat \
+            --without-vfs \
+            --with-shared-modules=""
+
+      - name: Build Samba (smbd/nmbd only)
+        working-directory: samba-source
+        run: |
+          # 只编译核心守护进程，跳过大量不必要目标
+          make smbd nmbd
+          # 检查二进制文件是否生成
+          ls -l bin/smbd bin/nmbd
+
+      - name: Package binaries and required libraries
+        run: |
+          mkdir -p samba-ios-package/bin samba-ios-package/lib
+          cp samba-source/bin/smbd samba-ios-package/bin/
+          cp samba-source/bin/nmbd samba-ios-package/bin/
+
+          # 复制运行时依赖的库（使用 otool -L 检查，但这里简单复制常见库）
+          # 注意：iOS 系统库不需要复制，只需要复制 Samba 自建的 .dylib
+          # 例如 libsmbconf, libaddns 等
+          find samba-source/bin -name "*.dylib" -exec cp {} samba-ios-package/lib/ \;
+          find samba-source/lib -name "*.dylib" -exec cp {} samba-ios-package/lib/ \;
+
+          # 复制一个最小配置文件示例
+          cat > samba-ios-package/smb.conf << EOF
+          [global]
+          workgroup = WORKGROUP
+          server string = iOS Samba
+          security = user
+          map to guest = Bad User
+          log file = /var/log/samba.log
+          max log size = 100
+          [Shared]
+          path = /var/mobile/Shared
+          read only = no
+          browseable = yes
+          guest ok = yes
+          EOF
+
+          # 创建启动脚本（通过 launchd 或手动运行）
+          cat > samba-ios-package/start_samba.sh << 'EOF'
+          #!/bin/sh
+          DIR="$(dirname "$0")"
+          export DYLD_LIBRARY_PATH="$DIR/lib"
+          "$DIR/bin/smbd" -s "$DIR/smb.conf" -D
+          "$DIR/bin/nmbd" -s "$DIR/smb.conf" -D
+          EOF
+          chmod +x samba-ios-package/start_samba.sh
+
+          # 打包
+          tar -czf samba-ios-${{ github.event.inputs.architecture }}.tar.gz -C samba-ios-package .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: samba-ios-${{ github.event.inputs.architecture }}
+          path: samba-ios-${{ github.event.inputs.architecture }}.tar.gz
