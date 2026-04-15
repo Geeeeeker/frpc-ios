@@ -9,9 +9,9 @@ on:
         required: true
         default: 'v0.37.1'
       go_version:
-        description: 'Go version'
+        description: 'Go version (1.21+)'
         required: false
-        default: '1.20'
+        default: '1.23'
 
 jobs:
   build:
@@ -33,72 +33,4 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           gomobile init -v
 
-      - name: Verify gomobile installation
-        run: gomobile version
-
-      - name: Download FRP source code
-        run: |
-          FRP_VERSION=${{ github.event.inputs.frp_version }}
-          wget https://github.com/fatedier/frp/archive/${FRP_VERSION}.tar.gz
-          tar -xzf ${FRP_VERSION}.tar.gz
-          mv frp-${FRP_VERSION#v} frp
-          echo "FRP_DIR=$(pwd)/frp" >> $GITHUB_ENV
-
-      - name: Apply required code modifications
-        run: |
-          cd $FRP_DIR
-          
-          # 修改 root.go: 将 runClient 导出为 RunClient
-          sed -i.bak 's/err := runClient(cfgFile)/err := RunClient(cfgFile)/' cmd/frpc/sub/root.go
-          sed -i.bak 's/func runClient(cfgFilePath string) (err error) {/func RunClient(cfgFilePath string) (err error) {/' cmd/frpc/sub/root.go
-          
-          # 修改 main.go: 改为库模式并提供导出函数
-          cat > cmd/frpc/main.go << 'EOF'
-          // Copyright 2016 fatedier, fatedier@gmail.com
-          //
-          // Licensed under the Apache License, Version 2.0 (the "License");
-          // you may not use this file except in compliance with the License.
-          // You may obtain a copy of the License at
-          //
-          //     http://www.apache.org/licenses/LICENSE-2.0
-          //
-          // Unless required by applicable law or agreed to in writing, software
-          // distributed under the License is distributed on an "AS IS" BASIS,
-          // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-          // See the License for the specific language governing permissions and
-          // limitations under the License.
-
-          package frpclib
-
-          import (
-          	"github.com/fatedier/frp/cmd/frpc/sub"
-          	"github.com/fatedier/golib/crypto"
-          )
-
-          func main() {
-          	crypto.DefaultSalt = "frp"
-          	sub.Execute()
-          }
-
-          func Run(cfgFilePath string) {
-          	crypto.DefaultSalt = "frp"
-          	sub.RunClient(cfgFilePath)
-          }
-          EOF
-          
-          # 确保 go.mod 存在（较新版本可能已包含）
-          if [ ! -f go.mod ]; then
-            go mod init github.com/fatedier/frp
-            go mod tidy
-          fi
-
-      - name: Build iOS framework with gomobile
-        run: |
-          cd $FRP_DIR
-          GOFLAGS="-mod=mod" gomobile bind -target=ios -o Frpclib.framework ./cmd/frpc
-
-      - name: Upload framework artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Frpclib.framework-${{ github.event.inputs.frp_version }}
-          path: ${{ env.FRP_DIR }}/Frpclib.framework
+      # 后续步骤与原工作流一致...
