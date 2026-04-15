@@ -15,7 +15,7 @@ on:
 
 jobs:
   build:
-    name: Build Frpclib.framework
+    name: Build Frpclib.xcframework
     runs-on: macos-latest
 
     steps:
@@ -92,13 +92,13 @@ jobs:
             go mod tidy
           fi
 
-      - name: Build iOS framework with gomobile
+      - name: Build iOS xcframework with gomobile
         run: |
           cd $FRP_DIR
-          GOFLAGS="-mod=mod" gomobile bind -target=ios -o Frpclib.framework ./cmd/frpc
+          GOFLAGS="-mod=mod" gomobile bind -target=ios -o Frpclib.xcframework ./cmd/frpc
 
-      - name: Upload framework artifact
+      - name: Upload xcframework artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Frpclib.framework-${{ github.event.inputs.frp_version }}
-          path: ${{ env.FRP_DIR }}/Frpclib.framework
+          name: Frpclib.xcframework-${{ github.event.inputs.frp_version }}
+          path: ${{ env.FRP_DIR }}/Frpclib.xcframework
